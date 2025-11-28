@@ -36,18 +36,6 @@ multiline-quotes = "double"
 [tool.ruff.format]
 quote-style = 'single'
 
-[tool.mypy]
-python_version = '3.12'
-disallow_untyped_defs = true
-strict_optional = true
-exclude = [
-    'tests/',
-    '.venv/',
-    '__pycache__'
-]
-ignore_missing_imports = true
-
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
