@@ -75,6 +75,10 @@ class EmailItem(BaseModel):
     body: str
     html_body: str | None = None
     attachments: list[dict] = []
+    attachments_count: int = 0
+    is_spam: bool = False
+    spam_score: int = 0
+    spam_reasons: list[str] = []
 
 
 class EmailListResponse(BaseModel):
@@ -362,6 +366,292 @@ def classify_email_type(subject: str, from_addr: str, body: str) -> str:
     return 'information_request'
 
 
+def is_spam(
+    subject: str, from_addr: str, body: str, attachments: list[dict]
+) -> dict:
+    """
+    Определяет, является ли письмо спамом на основе характеристик (для банка).
+
+    Args:
+        subject: Тема письма
+        from_addr: Адрес отправителя
+        body: Текст письма
+        attachments: Список вложений
+
+    Returns:
+        Словарь с результатом: {
+        'is_spam': bool,
+        'spam_score': int,
+        'reasons': list
+        }
+    """
+    spam_score = 0
+    reasons = []
+
+    subject_lower = subject.lower()
+    body_lower = body.lower()
+    from_lower = from_addr.lower()
+    spam_subject_keywords = [
+        'выигрыш',
+        'приз',
+        'лотерея',
+        'бесплатные деньги',
+        'легкий заработок',
+        'криптовалюта',
+        'биткоин',
+        'быстрый доход',
+        'инвестиции без риска',
+        'удвоим ваш капитал',
+        'гарантированная прибыль',
+        'заработай миллион',
+        'халява',
+        'раздача',
+        'бонус за регистрацию',
+        'кредит всем',
+        'одобрим за час',
+        'деньги без проверок',
+        'займ без отказа',
+    ]
+    subject_matches = sum(
+        1 for keyword in spam_subject_keywords if keyword in subject_lower
+    )
+    if subject_matches > 0:
+        spam_score += subject_matches * 10
+        reasons.append(f'Подозрительные слова в теме ({subject_matches})')
+
+    spam_body_keywords = [
+        'введите пин-код',
+        'подтвердите cvv',
+        'отправьте код из смс',
+        'назовите кодовое слово',
+        'продиктуйте номер карты',
+        'срок карты истек',
+        'ваш счет заблокирован',
+        'подозрительная операция',
+        'несанкционированный доступ',
+        'верифицируйте личность',
+        'обновите данные карты',
+        'восстановите доступ к счету',
+        'переведите деньги срочно',
+        'аванс за перевод',
+        'комиссия за вывод',
+        'оплатите налог с выигрыша',
+        'заплатите за разблокировку',
+        'внесите залог',
+        'нигерийский принц',
+        'наследство из-за рубежа',
+        'благотворительный фонд',
+        'помощь в обналичивании',
+        'отмывание средств',
+        'обход санкций',
+        'гарантированный доход',
+        'без рисков',
+        'удвоим за неделю',
+        'пассивный заработок',
+        'финансовая пирамида',
+        'форекс',
+        'бинарные опционы',
+        'инвестируй сейчас',
+        'ограниченное количество мест',
+        'эксклюзивное предложение для вас',
+        'кредит без справок',
+        'займ на карту за 5 минут',
+        'одобрение 100%',
+        'плохая кредитная история не помеха',
+        'деньги до зарплаты',
+        'микрозайм',
+        'ваш родственник в беде',
+        'срочно нужны деньги',
+        'помогите перевести',
+        'служба безопасности банка',
+        'сотрудник полиции',
+        'представитель цб',
+    ]
+    body_matches = sum(
+        1 for keyword in spam_body_keywords if keyword in body_lower
+    )
+    if body_matches > 0:
+        spam_score += body_matches * 20
+        reasons.append(f'Спам-фразы в тексте ({body_matches})')
+
+    if subject and subject.isupper() and len(subject) > 10:
+        spam_score += 20
+        reasons.append('Тема полностью заглавными буквами')
+
+    exclamation_count = subject.count('!') + body.count('!')
+    if exclamation_count >= 5:
+        spam_score += exclamation_count * 5
+        reasons.append(f'Много восклицательных знаков ({exclamation_count})')
+
+    suspicious_domains = [
+        '.tk',
+        '.ml',
+        '.ga',
+        '.cf',
+        '.gq',
+        'tempmail',
+        'throwaway',
+        'guerrillamail',
+        'mailinator',
+        'temp-mail',
+        '10minutemail',
+        'disposable',
+    ]
+    if any(domain in from_lower for domain in suspicious_domains):
+        spam_score += 40
+        reasons.append('Подозрительный домен отправителя')
+
+    trusted_brands = [
+        'сбербанк',
+        'втб',
+        'тинькофф',
+        'альфа-банк',
+        'газпромбанк',
+        'россельхозбанк',
+        'открытие',
+        'совкомбанк',
+        'райффайзенбанк',
+        'банк санкт-петербург',
+        'росбанк',
+        'промсвязьбанк',
+        'уралсиб',
+        'центральный банк',
+        'цб рф',
+        'банк россии',
+        'росфинмониторинг',
+        'федеральная налоговая служба',
+        'фнс',
+        'росфиннадзор',
+        'visa',
+        'mastercard',
+        'мир',
+        'unionpay',
+        'paypal',
+        'qiwi',
+        'яндекс.деньги',
+    ]
+    from_name = from_addr.split('<')[0].lower() if '<' in from_addr else ''
+    from_domain = (
+        from_addr.split('@')[-1].replace('>', '').lower()
+        if '@' in from_addr
+        else ''
+    )
+
+    for brand in trusted_brands:
+        if brand in from_name and brand not in from_domain:
+            spam_score += 50
+            reasons.append(
+                f'Подделка отправителя ("{brand}" не совпадает с доменом)'
+            )
+            break
+
+    link_count = body_lower.count('http://') + body_lower.count('https://')
+    if link_count > 5:
+        spam_score += link_count * 5
+        reasons.append(f'Слишком много ссылок ({link_count})')
+
+    short_link_services = [
+        'bit.ly',
+        'goo.gl',
+        'tinyurl',
+        'clck.ru',
+        'vk.cc',
+        'cutt.ly',
+        'is.gd',
+    ]
+    short_links = sum(
+        1 for service in short_link_services if service in body_lower
+    )
+    if short_links > 0:
+        spam_score += short_links * 15
+        reasons.append(f'Короткие ссылки ({short_links})')
+
+    if (
+        '.onion' in body_lower
+        or 'telegram.me' in body_lower
+        or 't.me' in body_lower
+    ):
+        spam_score += 30
+        reasons.append('Ссылки на подозрительные ресурсы')
+
+    dangerous_extensions = [
+        '.exe',
+        '.bat',
+        '.cmd',
+        '.scr',
+        '.vbs',
+        '.js',
+        '.jar',
+        '.com',
+        '.pif',
+        '.apk',
+    ]
+    dangerous_attachments = [
+        att
+        for att in attachments
+        if any(
+            att.get('filename', '').lower().endswith(ext)
+            for ext in dangerous_extensions
+        )
+    ]
+    if dangerous_attachments:
+        spam_score += len(dangerous_attachments) * 60
+        reasons.append(f'Опасные вложения ({len(dangerous_attachments)})')
+
+    if len(attachments) > 10:
+        spam_score += 25
+        reasons.append(f'Подозрительно много вложений ({len(attachments)})')
+
+    if len(body.strip()) < 50 and len(attachments) > 0:
+        spam_score += 20
+        reasons.append('Пустое письмо с вложениями')
+
+    if 'display:none' in body_lower or 'visibility:hidden' in body_lower:
+        spam_score += 30
+        reasons.append('Скрытый текст в HTML')
+
+    if '<html' in body_lower and len(body_lower) > 500:
+        try:
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(body, 'html.parser')
+            text_only = soup.get_text(strip=True)
+            if len(text_only) < 100:
+                spam_score += 15
+                reasons.append('HTML без полезного текста')
+        except Exception:
+            pass
+
+    sensitive_requests = [
+        'номер карты',
+        'срок действия карты',
+        'cvv код',
+        'cvc код',
+        'пин-код',
+        'пароль',
+        'секретный код',
+        'кодовое слово',
+        'номер паспорта',
+        'снилс',
+        'инн',
+    ]
+    sensitive_matches = sum(
+        1 for keyword in sensitive_requests if keyword in body_lower
+    )
+    if sensitive_matches > 0:
+        spam_score += sensitive_matches * 25
+        reasons.append(f'Запрос личных данных ({sensitive_matches})')
+
+    is_spam_result = spam_score >= 60
+
+    return {
+        'is_spam': is_spam_result,
+        'spam_score': spam_score,
+        'confidence': min(spam_score / 100 * 100, 100),
+        'reasons': reasons,
+    }
+
+
 def parse_email_parts(msg: email.message.Message) -> dict:
     """
     Парсит все части письма: текст, HTML, вложения и изображения.
@@ -614,6 +904,8 @@ def fetch_emails(offset: int = 0, limit: int = 20) -> list[dict]:
 
             sender = format_sender(from_addr)
 
+            spam_check = is_spam(subject, from_addr, body, attachments)
+
             emails.append(
                 {
                     'subject': subject,
@@ -625,6 +917,9 @@ def fetch_emails(offset: int = 0, limit: int = 20) -> list[dict]:
                     'html_body': html_body,
                     'attachments': attachments,
                     'attachments_count': len(attachments),
+                    'is_spam': spam_check['is_spam'],
+                    'spam_score': spam_check['spam_score'],
+                    'spam_reasons': spam_check['reasons'],
                 }
             )
 
