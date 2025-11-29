@@ -12,6 +12,7 @@ from typing import cast
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 
 load_dotenv()
@@ -31,6 +32,14 @@ app = FastAPI(
     title='Email API',
     description='API для отправки и получения email',
     version='0.1.0',
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
 )
 
 
